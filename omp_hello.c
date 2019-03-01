@@ -11,6 +11,10 @@ int main(int argc, char *argv[]) {
    #pragma omp parallel num_threads(thread_count)
    Hello();
 
+   for(int i = 1; i < 10; i++) {
+      printf("%d HAI\n", i);
+   }
+
    return 0;
 }
 

@@ -6,16 +6,17 @@
 #define BASE (1 << BASE_BITS)
 #define MASK (BASE-1)
 #define DIGITS(v, shift) (((v) >> shift) & MASK)
+#define SEED 13516085
 
 int number_of_int;
 int *array_not_sorted1, *array_not_sorted2, *array_not_sorted3;
 clock_t start_time_serial, end_time_serial;
 clock_t start_time_parallel, end_time_parallel;
 int* count_result[100];
+int global_count[100][10];
 
 void create_random_array(int* arr, int n) {
-	int seed = 13516085;
-	srand(seed);
+	srand(SEED);
 	for (int i = 0; i < n; i++) {
 		arr[i] = (int)rand();
 	}
@@ -26,7 +27,7 @@ int get_max(int* arr, int n) {
     for (int i = 1; i < n; i++) 
         if (arr[i] > mx) 
             mx = arr[i]; 
-    return mx; 
+    return mx;
 }
 
 void count_sort(int* arr, int n, int exp) {
@@ -59,91 +60,58 @@ void radix_sort_serial(int* arr, int n) {
 	}
 }
 
-void count_sort_parallel(int* arr, int n, int exp) {
-	int* output;
-	int i, count[10] = {0};
+void count_sort_parallel(int* arr, int n, int index_digit) {
+	int* output = (int*) malloc(n*sizeof(int)); 
+	int exp = pow(10, index_digit);
 
-	output = (int*) malloc(n*sizeof(int));
-
-	#pragma omp parallel for reduction(+:count[:10])
-	for(int i = 0; i < n; i++) {
-		count[(arr[i]/exp)%10]++;
+	for(int i = n-1; i >= 0; i--) {
+		output[global_count[index_digit][(arr[i]/exp)%10] - 1] = arr[i];
+		global_count[index_digit][(arr[i]/exp)%10]--;
 	}
 
-	for(i = 1; i < 10; i++) {
-		count[i] += count[i-1];
+	memcpy(arr, output, n*sizeof(int));
+}
+
+
+int get_number_digit(int n) {
+	int result = 0;
+	while(n > 0) {
+		result++;
+		n /= 10;
+	}
+	return result;
+}
+
+void fill_count(int* arr, int n) {
+	int local_count[10] = {0};
+
+	int rank = omp_get_thread_num();
+	int exp = pow(10, rank);
+
+	#pragma omp parallel for reduction(+:local_count[:10])
+	for (int i = 0; i < n; i++) {
+		local_count[(arr[i]/exp)%10]++;
 	}
 
-	for(i = n - 1; i >= 0; i--) {
-		output[count[(arr[i]/exp)%10] - 1] = arr[i];
-		count[(arr[i]/exp)%10]--;
+	for(int i = 1; i < 10; i++) {
+		local_count[i] += local_count[i-1];
 	}
 
-	for(i = 0; i < n; i++) {
-		arr[i] = output[i];
-	}
+	memcpy(global_count[rank], local_count, 10*sizeof(int)); 
 }
 
 void radix_sort_parallel(int* arr, int n) {
 	int m = get_max(arr, n);
+	int number_digit = get_number_digit(m);
 
-	for(int exp = 1; m/exp > 0; exp *= 10) {
-		count_sort_parallel(arr, n, exp);
+	#pragma omp parallel num_threads(number_digit)
+	fill_count(arr, n);
+
+	for(int i = 0; i < number_digit; i++) {
+		count_sort_parallel(arr, n, i);
 	}
 
 	return;
-}
-
-void omp_lsd_radix_sort(int n, int* arr) {
-    int * buffer = malloc(n*sizeof(int));
-    int total_digits = sizeof(int)*8;
- 
-    //Each thread use local_bucket to move data
-    int i;
-    for(int shift = 0; shift < total_digits; shift+=BASE_BITS) {
-        int bucket[BASE] = {0};
- 
-        int local_bucket[BASE] = {0}; // size needed in each bucket/thread
-        //1st pass, scan whole and check the count
-        #pragma omp parallel firstprivate(local_bucket)
-        {
-            #pragma omp for schedule(static) nowait
-            for(i = 0; i < n; i++){
-                local_bucket[DIGITS(arr[i], shift)]++;
-            }
-            #pragma omp critical
-            for(i = 0; i < BASE; i++) {
-                bucket[i] += local_bucket[i];
-            }
-            #pragma omp barrier
-            #pragma omp single
-            for (i = 1; i < BASE; i++) {
-                bucket[i] += bucket[i - 1];
-            }
-            int nthreads = omp_get_num_threads();
-            int tid = omp_get_thread_num();
-            for(int cur_t = nthreads - 1; cur_t >= 0; cur_t--) {
-                if(cur_t == tid) {
-                    for(i = 0; i < BASE; i++) {
-                        bucket[i] -= local_bucket[i];
-                        local_bucket[i] = bucket[i];
-                    }
-                } else { //just do barrier
-                    #pragma omp barrier
-                }
- 
-            }
-            #pragma omp for schedule(static)
-            for(i = 0; i < n; i++) { //note here the end condition
-                buffer[local_bucket[DIGITS(arr[i], shift)]++] = arr[i];
-            }
-        }
-        //now move data
-        int* tmp = arr;
-        arr = buffer;
-        buffer = tmp;
-    }
-    free(buffer);
 }
 
 int check_sorted(int* array_sorted, int* array_test, int n) {
@@ -152,13 +120,19 @@ int check_sorted(int* array_sorted, int* array_test, int n) {
 			return 0;
 		}
 	}
-
 	return 1;
+}
+
+void print_array(int* arr, int n) {
+	for(int i = 0; i < n; i++) {
+		printf("%d\n", arr[i]);
+	}
 }
 
 int main(int argc, char *argv[]) {
 	int number_of_int = strtol(argv[1], NULL, 10);
-	
+	int success;
+
 	array_not_sorted1 = (int*) malloc(number_of_int*sizeof(int));
 	array_not_sorted2 = (int*) malloc(number_of_int*sizeof(int));
 	array_not_sorted3 = (int*) malloc(number_of_int*sizeof(int));
@@ -172,17 +146,16 @@ int main(int argc, char *argv[]) {
 	end_time_serial = clock();
 
 	printf("Waktu yang dibutuhkan untuk Radix Sort Serial: %lfms\n", (double)(end_time_serial - start_time_serial)/CLOCKS_PER_SEC * 1000 * 1000);
+	// start_time_parallel = clock();
+	// omp_lsd_radix_sort(number_of_int, array_not_sorted2);
+	// end_time_parallel = clock();
 
-	start_time_parallel = clock();
-	omp_lsd_radix_sort(number_of_int, array_not_sorted2);
-	end_time_parallel = clock();
+	// success = check_sorted(array_not_sorted1, array_not_sorted2, number_of_int);
+	// if (success == 1) {
+	// 	printf("Array Sorted\n");
+	// }
 
-	int success = check_sorted(array_not_sorted1, array_not_sorted2, number_of_int);
-	if (success == 1) {
-		printf("Array Sorted\n");
-	}
-
-	printf("Waktu yang dibutuhkan untuk Radix Sort Parallel Haichuanwan: %lfms\n", (double)(end_time_parallel - start_time_parallel)/CLOCKS_PER_SEC * 1000 * 1000);
+	// printf("Waktu yang dibutuhkan untuk Radix Sort Parallel Haichuanwan: %lfms\n", (double)(end_time_parallel - start_time_parallel)/CLOCKS_PER_SEC * 1000 * 1000);
 
 	start_time_parallel = clock();
 	radix_sort_parallel(array_not_sorted3, number_of_int);
@@ -191,7 +164,7 @@ int main(int argc, char *argv[]) {
 	success = check_sorted(array_not_sorted1, array_not_sorted3, number_of_int);
 	if (success == 1) {
 		printf("Array Sorted\n");
-	}
+	} 
 
 	printf("Waktu yang dibutuhkan untuk Radix Sort Parallel Saya: %lfms\n", (double)(end_time_parallel - start_time_parallel)/CLOCKS_PER_SEC * 1000 * 1000);
 }
